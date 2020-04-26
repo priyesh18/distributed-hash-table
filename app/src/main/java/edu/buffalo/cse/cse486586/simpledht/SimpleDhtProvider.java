@@ -71,6 +71,9 @@ public class SimpleDhtProvider extends ContentProvider {
                 e.printStackTrace();
             }
         }
+        public String getHash() {
+            return this.hash;
+        }
         public int compareTo(Avd device) {
             if(device.hash.compareTo(this.hash) < 0) return 1;
             else return -1;
@@ -149,30 +152,8 @@ public class SimpleDhtProvider extends ContentProvider {
 
 
 
-//        String[] ports = new String[]{"5554", "5556", "5558", "5560", "5562"};
-//        List<String> tempHashes = new ArrayList<>();
-//        for(int i = 0; i < ports.length; i++) {
-//            try {
-//                String h = genHash(ports[i]);
-//                tempHashes.add(h);
-//                Log.v(ports[i], h);
-//            } catch (NoSuchAlgorithmException e) {
-//                e.printStackTrace();
-//            }
-//        }
-//        Collections.sort(tempHashes);
-//        for(String i: tempHashes) {
-//            Log.v(":",i);
-//        }
-//        try {
-//            myhash = genHash(myPort);
-//        } catch (NoSuchAlgorithmException e) {
-//            e.printStackTrace();
-//        }
-        //Hard code the successor and predecessor
-//        initializations(myPort);
         currentAvd = new Avd(portStr);
-        activeDevices.add(currentAvd); //mostly not used.
+        activeDevices.add(currentAvd);
 
 
         try {
@@ -184,7 +165,7 @@ public class SimpleDhtProvider extends ContentProvider {
         }
         //replace myPort with getPort;
         if(!myPort.equals(REMOTE_PORT0)) {
-            String msg = "J,"+myPort+"\n";
+            String msg = "J,"+portStr+"\n";
             String recPort = REMOTE_PORT0;
             new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, msg, recPort);
         }
@@ -240,16 +221,11 @@ public class SimpleDhtProvider extends ContentProvider {
                     if(str[0].equals("J")) {
                         Log.d(TAG, "Join request received for:"+str[1]);
                         // Only received by avd 0
-//                        if(currentAvd.pred_port == null) {
-                            // Reply with currentAvd.pred, succ
-                            out.println("take my id!\n");
-                            activeDevices.add(new Avd(str[1]));
-                            stabilizeRing();
-                            //TODO msgs redistribution and more than 2 added;
-//                        }
-//                        else {
-//
-//                        }
+                        // Reply with currentAvd.pred, succ, if you want to.
+                        out.println("J,take this id!\n");
+                        activeDevices.add(new Avd(str[1]));
+                        stabilizeRing();
+
                     }
                     else if(str[0].equals("Q")) {
                         Log.d(TAG, "Query request received for:"+str[1]);
@@ -260,6 +236,7 @@ public class SimpleDhtProvider extends ContentProvider {
                         cv.put(KEY_FIELD, str[1]);
                         cv.put(VALUE_FIELD, str[2]);
                         insert(null, cv);
+                        out.println("I, done insert\n");
                     }
                     else if(str[0].equals("R")) {
                         Log.d(TAG, "Remove request received for:"+str[1]);
@@ -320,8 +297,7 @@ public class SimpleDhtProvider extends ContentProvider {
 
                 Socket socket;
                 PrintWriter out;
-//                String[] str = msgs[0].split(",");
-//                if(str[0].compareTo("J") == 0) {
+
                 Log.d(TAG, "Sending: "+ msgToSend+ " to: "+recPort);
                 socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
                         Integer.parseInt(recPort));
@@ -338,6 +314,7 @@ public class SimpleDhtProvider extends ContentProvider {
                 String[] reply = replyStr.split(",");
                 if(reply[0].equals("J")) {
                     Log.v("Join was accepted", "!");
+                    currentAvd.pred_port = "10000"; // this port doesn't matter.
                 }
 
 //                }
@@ -352,6 +329,26 @@ public class SimpleDhtProvider extends ContentProvider {
 
             return null;
         }
+    }
+
+    private String getPartitionPort(String msg) {
+        String msgHash = "";
+        try {
+            msgHash = genHash(msg);
+        } catch (NoSuchAlgorithmException e) {
+            e.printStackTrace();
+        }
+        ListIterator<Avd> it = activeDevices.listIterator();
+
+        while(it.hasNext()) {
+            Avd tempAvd = it.next();
+            if(tempAvd.getHash().compareTo(msgHash) > 0) return tempAvd.getLongPort();
+        }
+        // If not returned yet. The msgHash is greater than the last Avd in the list.
+        // Hence the successor will be the first Avd;
+        it = activeDevices.listIterator();
+        return it.next().getLongPort();
+
     }
 
 
@@ -381,37 +378,69 @@ public class SimpleDhtProvider extends ContentProvider {
     @Override
     public Uri insert(Uri uri, ContentValues values) {
 
-        String a = values.getAsString("key");
-        String b = values.getAsString("value");
+
+        String k = values.getAsString("key");
+        String v = values.getAsString("value");
 
         String filename = null;
-        String filehash = null;
-        String predhash = null;
-        try {
-            if(pred == null) {
-                filename = genHash(a);
-            }
-            else {
-                filehash = genHash(a);
-                predhash = genHash(pred);
-                if(predhash.compareTo(filehash) > 0 && myhash.compareTo(filehash) <= 0) {
-                    Log.v(TAG, "In local");
-                    filename = filehash;
-                }
-                else {
-                    new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, "I,"+a+","+b+"\n", myhash);
-                    return null;
-                }
-            }
 
-        } catch (NoSuchAlgorithmException e) {
-            e.printStackTrace();
+        // for only one avd
+        if(currentAvd.pred_port == null) {
+            try {
+                filename = genHash(k);
+            }
+            catch (NoSuchAlgorithmException e) {
+                e.printStackTrace();
+            }
         }
-        String fileContents = b;
+        else {
+          // Devices have joined.
+          if(currentAvd.getLongPort().equals(REMOTE_PORT0)) {
+              // when insert request received by avd0. from activity or other device.
+              String port = getPartitionPort(k);
+              if(port.equals(REMOTE_PORT0)) {
+                  // When request belongs to avd0
+                  try {
+                      filename = genHash(k);
+                  }
+                  catch (NoSuchAlgorithmException e) {
+                      e.printStackTrace();
+                  }
+              }
+              else {
+                  // when key belongs to other avd(not 0)
+                  new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, "I," + k + "," + v + "\n", port);
+                  return null;
+              }
+          }
+          else {
+              // wHEN REQUEST RECEIEVED from !AVD0
+              if(uri == null) {
+                  // request came from avd0; insert
+                  try {
+                      filename = genHash(k);
+                  }
+                  catch (NoSuchAlgorithmException e) {
+                      e.printStackTrace();
+                  }
+              }
+              else {
+                  // request received from other activity.
+                  new ClientTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR, "I," + k + "," + v + "\n", REMOTE_PORT0);
+                  return null;
+              }
+          }
+        }
+
+
+
+
+
+        String fileContents = v;
 //        Log.e(TAG, "inside insert");
         try (FileOutputStream fos = getContext().openFileOutput(filename, Context.MODE_PRIVATE)) {
             fos.write(fileContents.getBytes());
-            allKeys.add(a);
+            allKeys.add(k);
         } catch (FileNotFoundException e) {
             Log.e(TAG, "File not found exception in insert");
 
