@@ -193,10 +193,10 @@ public class SimpleDhtProvider extends ContentProvider {
             temp.setPred_port(pre.getPort());
             temp = pre;
         }
-
-        for(Avd a: activeDevices) {
-            Log.v(a.getPort(), "Pred: "+ a.pred_port + " Succ: "+ a.succ_port);
-        }
+//
+//        for(Avd a: activeDevices) {
+//            Log.v(a.getPort(), "Pred: "+ a.pred_port + " Succ: "+ a.succ_port);
+//        }
     }
 
     /***
@@ -219,7 +219,7 @@ public class SimpleDhtProvider extends ContentProvider {
                     String inputLine= in.readLine();
                     String[] str = inputLine.split(",");
                     if(str[0].equals("J")) {
-                        Log.d(TAG, "Join request received for:"+str[1]);
+//                        Log.d(TAG, "Join request received for:"+str[1]);
                         // Only received by avd 0
                         // Reply with currentAvd.pred, succ, if you want to.
                         out.println("J,take this id!\n");
@@ -229,9 +229,18 @@ public class SimpleDhtProvider extends ContentProvider {
                     }
                     else if(str[0].equals("Q")) {
                         Log.d(TAG, "Query request received for:"+str[1]);
+//                        if(allKeys.contains(str[1]) || str[1].equals("@")) {
+                            Log.d("server", "key found");
+                            Cursor c = query(null,null, str[1], new String[]{str[2]}, null);
+                            while(c.moveToNext()) {
+                                String pair = c.getString(0) +","+ c.getString(1);
+                                out.println(pair);
+                            }
+                            out.println("done");
+//                        }
                     }
                     else if(str[0].equals("I")) {
-                        Log.d(TAG, "Insert request received for:"+str[1]);
+//                        Log.d(TAG, "Insert request received for:"+str[1]);
                         ContentValues cv = new ContentValues();
                         cv.put(KEY_FIELD, str[1]);
                         cv.put(VALUE_FIELD, str[2]);
@@ -298,7 +307,7 @@ public class SimpleDhtProvider extends ContentProvider {
                 Socket socket;
                 PrintWriter out;
 
-                Log.d(TAG, "Sending: "+ msgToSend+ " to: "+recPort);
+//                Log.d(TAG, "Sending: "+ msgToSend+ " to: "+recPort);
                 socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
                         Integer.parseInt(recPort));
 
@@ -310,10 +319,10 @@ public class SimpleDhtProvider extends ContentProvider {
                 in = new BufferedReader(
                         new InputStreamReader(socket.getInputStream()));
                 replyStr = in.readLine();
-                Log.v("Reply receieved: ", replyStr);
+//                Log.v("Reply receieved: ", replyStr);
                 String[] reply = replyStr.split(",");
                 if(reply[0].equals("J")) {
-                    Log.v("Join was accepted", "!");
+//                    Log.v("Join was accepted", "!");
                     currentAvd.pred_port = "10000"; // this port doesn't matter.
                 }
 
@@ -449,7 +458,7 @@ public class SimpleDhtProvider extends ContentProvider {
             Log.e(TAG, "IOException in insert");
             e.printStackTrace();
         }
-        Log.v(TAG, values.toString());
+//        Log.v(TAG, values.toString());
         return uri;
 //        return null;
     }
@@ -482,11 +491,13 @@ public class SimpleDhtProvider extends ContentProvider {
         return null;
     }
 
+
     @Override
     public Cursor query(Uri uri, String[] projection, String selection, String[] selectionArgs,
             String sortOrder) {
 
         MatrixCursor mc = new MatrixCursor(new String[]{"key", "value"});
+        if(currentAvd.pred_port == null && selection.equals("*")) selection = "@";
 
         if(selection.compareTo("@") == 0) {
             Log.v(TAG, "Query @");
@@ -494,23 +505,141 @@ public class SimpleDhtProvider extends ContentProvider {
                 String line = queryHelper(k);
                 mc.newRow().add("key", k).add("value",line);
             }
+            return mc;
         }
-        else if(selection.compareTo("*") == 0) {
-            Log.v(TAG, "Query *");
-            // Needs communication here with avds.
-            for(String k: allKeys) {
-                String line = queryHelper(k);
-                mc.newRow().add("key", k).add("value",line);
-            }
-        }
-        else {
+        if(allKeys.contains(selection)) {
             String line = queryHelper(selection);
             mc.newRow().add("key", selection).add("value",line);
-            Log.v(TAG, "inside else of query");
+            return mc;
         }
-        return mc;
 
-//        return null;
+        // Needs networking now.
+        BufferedReader in;
+
+        Socket socket;
+        PrintWriter out;
+
+        if( ! currentAvd.getLongPort().equals(REMOTE_PORT0)) {
+            // Not the avd0
+            String msgToSend = "Q," + selection + "," + currentAvd.getLongPort();
+            if(selection.equals("*")) {
+                for(String k: allKeys) {
+                    String line = queryHelper(k);
+                    mc.newRow().add("key", k).add("value",line);
+                }
+            }
+
+            try {
+                socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
+                        Integer.parseInt(REMOTE_PORT0));
+
+                out = new PrintWriter(socket.getOutputStream(), true);
+                out.println(msgToSend);
+                //Reply from the server
+                in = new BufferedReader(
+                        new InputStreamReader(socket.getInputStream()));
+
+                String replyStr = "";
+                while(true) {
+                    replyStr = in.readLine();
+                    if(replyStr.equals("done")) break;
+                    Log.d("query", replyStr);
+                    String[] kv = replyStr.split(",");
+                    mc.newRow().add("key", kv[0]).add("value", kv[1]);
+                }
+                return mc;
+
+
+
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+
+        }
+        else {
+            // if avd 0
+            if(selection.equals("*")) {
+                for(String k: allKeys) {
+                    String line = queryHelper(k);
+                    mc.newRow().add("key", k).add("value",line);
+                }
+                ListIterator<Avd> it = activeDevices.listIterator();
+                String fromPort = selectionArgs == null ? REMOTE_PORT0 : selectionArgs[0];
+//                Log.d("Query **", fromPort);
+                while(it.hasNext()) {
+                    Avd temp = it.next();
+
+                    Log.d("Query in *", fromPort);
+                    if(temp.getLongPort().equals(REMOTE_PORT0) || temp.getLongPort().equals(fromPort)) continue;
+                    String msgToSend = "Q,@,0";
+
+                    try {
+                        socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
+                                Integer.parseInt(temp.getLongPort()));
+
+                        out = new PrintWriter(socket.getOutputStream(), true);
+                        Log.d("Query *", "sending to:"+temp.getLongPort());
+                        out.println(msgToSend);
+                        //Reply from the server
+                        in = new BufferedReader(
+                                new InputStreamReader(socket.getInputStream()));
+
+                        String replyStr = "";
+                        while(true) {
+                            replyStr = in.readLine();
+                            if(replyStr.equals("done")) break;
+
+                            Log.v("query2", replyStr);
+
+                            String[] kv = replyStr.split(",");
+                            mc.newRow().add("key", kv[0]).add("value", kv[1]);
+                        }
+
+//                    socket.close();
+
+
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                }
+                return mc;
+            }
+            else {
+                String port = getPartitionPort(selection);
+                String msgToSend = "Q," + selection+",0";
+
+                try {
+                    socket = new Socket(InetAddress.getByAddress(new byte[]{10, 0, 2, 2}),
+                            Integer.parseInt(port));
+
+                    out = new PrintWriter(socket.getOutputStream(), true);
+                    out.println(msgToSend);
+                    //Reply from the server
+                    in = new BufferedReader(
+                            new InputStreamReader(socket.getInputStream()));
+
+                    String replyStr = "";
+                    while(true) {
+                        replyStr = in.readLine();
+                        if(replyStr.equals("done")) break;
+
+                        Log.d("query3", replyStr);
+
+                        String[] kv = replyStr.split(",");
+                        mc.newRow().add("key", kv[0]).add("value", kv[1]);
+                    }
+                    return mc;
+
+
+
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+
+
+        return null;
     }
 
     @Override
